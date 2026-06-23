@@ -1,0 +1,314 @@
+// Универсальный CLI к системе типов (essensio/notation): по файлу-схеме —
+// интерактивный ввод любых кортежей в управляемое тип-отношение. (task-tracker —
+// лишь пример схемы в examples/.)
+//
+// ЧТО ДЕЛАЕТ
+//   npm start -- <схема.tt> [--data <файл>] [--relation <имя>]
+//   Читает файл с объявлениями типов, находит управляемое тип-отношение T[]
+//   и даёт интерактивный ввод кортежей. Допустимость значения проверяет ТОЛЬКО
+//   checker (значение годно ⟺ checkValue не бросает TypeErr). Хранилище — файл
+//   --data в нашем же формате литерала-отношения (читается нашим парсером).
+//
+// ВХОД   аргументы CLI; файл схемы; (опц.) файл данных.
+// ВЫХОД  интерактивная сессия; при --data файл переписывается после каждого добавления.
+//
+// КРАЕВЫЕ
+//   * нет тип-отношения в схеме / безымянный элемент → понятная ошибка;
+//   * битая строка схемы → ошибка с номером строки текста;
+//   * неверный ввод поля → повтор поля; нарушение межполевого ограничения → кортеж не принят.
+
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { argv, exit, stdin as input, stdout as output } from "node:process";
+import * as readline from "node:readline/promises";
+
+import { Env, root, type SemType } from "@essensio/engine";
+import { describe } from "./describe";
+import { nodes as N } from "@essensio/engine";
+import { parseDeclaration, parseLiteral } from "@essensio/engine";
+
+type Managed = { relName: string; elemName: string; elemType: SemType; fields: Array<[string, SemType]> };
+
+// Запрос строки у пользователя; null — конец ввода (EOF).
+type Ask = (prompt: string) => Promise<string | null>;
+
+function parseArgs(): { schema: string; data?: string; relation?: string } {
+  const a = argv.slice(2);
+  let schema: string | undefined;
+  let data: string | undefined;
+  let relation: string | undefined;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === "--data") data = a[++i];
+    else if (a[i] === "--relation") relation = a[++i];
+    else if (schema === undefined) schema = a[i];
+  }
+  if (schema === undefined) {
+    console.error("Использование: npm start -- <схема.tt> [--data <файл>] [--relation <имя>]");
+    exit(1);
+  }
+  return { schema, data, relation };
+}
+
+function loadSchema(path: string): { env: Env; decls: N.Decl[] } {
+  const env = new Env();
+  const decls: N.Decl[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const s = line.trim();
+    if (s === "" || s.startsWith("#")) continue; // пустые и комментарии (# не начинает объявление)
+    let decl: N.Decl;
+    try {
+      decl = parseDeclaration(s);
+    } catch (e) {
+      throw new Error(`строка "${s}": ${(e as Error).message}`);
+    }
+    env.define(decl);
+    decls.push(decl);
+  }
+  return { env, decls };
+}
+
+function findRelation(env: Env, decls: N.Decl[], want?: string): Managed {
+  const rels = decls.filter((d) => d.type.kind === "TRel");
+  if (rels.length === 0) throw new Error("в файле нет тип-отношения вида T[]");
+  let decl = rels[rels.length - 1];
+  if (want !== undefined) {
+    const found = rels.find((d) => d.name === want);
+    if (found === undefined) throw new Error(`нет тип-отношения ${want}`);
+    decl = found;
+  }
+  const te = decl.type;
+  if (te.kind !== "TRel") throw new Error("ожидалось тип-отношение");
+  if (te.elem.kind !== "TName") throw new Error("элемент отношения должен быть именованным типом");
+  const elemType = env.types.get(te.elem.name);
+  if (elemType === undefined) throw new Error(`неизвестный тип элемента ${te.elem.name}`);
+  const r = root(elemType);
+  if (r.kind !== "Tup") throw new Error("элемент отношения должен быть кортежем");
+  return { relName: decl.name, elemName: te.elem.name, elemType, fields: r.fields };
+}
+
+function loadData(env: Env, path: string): N.TupleLit[] {
+  if (!existsSync(path)) return [];
+  const content = readFileSync(path, "utf8").trim();
+  if (content === "") return [];
+  const lit = parseLiteral(content);
+  env.infer(lit, {}); // валидация против объявленных типов
+  if (lit.kind !== "RelSel") throw new Error("данные: ожидался литерал-отношение");
+  return lit.value.elems.map((e) => {
+    if (e.kind !== "TupleLit") throw new Error("данные: элемент не кортеж");
+    return e;
+  });
+}
+
+function typeLabel(t: SemType): string {
+  switch (t.kind) {
+    case "Scalar": return t.name;
+    case "Sub": return t.name !== "" ? t.name : typeLabel(t.base);
+    case "Rel": return typeLabel(t.elem) + "[]";
+    case "RefT": return "#" + t.target;
+    case "Tup": return "{…}";
+  }
+}
+
+function parseBool(raw: string): boolean | null {
+  const s = raw.toLowerCase();
+  if (["да", "д", "yes", "y", "true", "+", "1"].includes(s)) return true;
+  if (["нет", "н", "no", "n", "false", "-", "0"].includes(s)) return false;
+  return null;
+}
+
+// сырой ввод → узел-литерал по корневому скаляру поля (для скаляров — дружелюбно)
+function buildNode(r: SemType, raw: string): N.Expr {
+  if (r.kind === "Scalar") {
+    if (r.name === "Число") {
+      if (!/^-?\d+(\.\d+)?$/.test(raw)) throw new Error("нужно число");
+      return N.Num(raw);
+    }
+    if (r.name === "Булево") {
+      const v = parseBool(raw);
+      if (v === null) throw new Error("введите: да / нет");
+      return N.Bool(v);
+    }
+    return N.Str(raw); // Строка, Дата, Время, UUID
+  }
+  if (r.kind === "RefT") return N.Str(raw);
+  return parseLiteral(raw); // вложенный кортеж/отношение — литерал нотации
+}
+
+async function readField(ask: Ask, env: Env, name: string, ftype: SemType): Promise<N.Expr | null> {
+  const hint = ftype.kind === "Sub" ? ` — ${describe(ftype.pred)}` : "";
+  const label = typeLabel(ftype) + hint;
+  for (;;) {
+    const raw = await ask(`  ${name} (${label}): `);
+    if (raw === null) return null; // EOF
+    try {
+      const node = buildNode(root(ftype), raw.trim());
+      env.checkValue(node, ftype);
+      return node;
+    } catch (e) {
+      console.log(`  ✗ ${(e as Error).message}`);
+    }
+  }
+}
+
+async function addOne(ask: Ask, env: Env, m: Managed): Promise<N.TupleLit | null> {
+  const fields: Array<[string, N.Expr]> = [];
+  for (const [fname, ftype] of m.fields) {
+    const node = await readField(ask, env, fname, ftype);
+    if (node === null) return null; // прервано (EOF)
+    fields.push([fname, node]);
+  }
+  const tup = N.TupleLit(fields);
+  try {
+    env.checkValue(tup, m.elemType); // межполевые ограничения кортежа
+  } catch (e) {
+    console.log(`  ✗ кортеж: ${(e as Error).message}`);
+    return null;
+  }
+  return tup;
+}
+
+async function readFieldEdit(
+  ask: Ask, env: Env, name: string, ftype: SemType, current: N.Expr,
+): Promise<N.Expr | null> {
+  const hint = ftype.kind === "Sub" ? ` — ${describe(ftype.pred)}` : "";
+  for (;;) {
+    const raw = await ask(`  ${name} (${typeLabel(ftype)}${hint}) [${display(current)}]: `);
+    if (raw === null) return null;
+    if (raw.trim() === "") return current; // Enter — оставить текущее
+    try {
+      const node = buildNode(root(ftype), raw.trim());
+      env.checkValue(node, ftype);
+      return node;
+    } catch (e) {
+      console.log(`  ✗ ${(e as Error).message}`);
+    }
+  }
+}
+
+async function editOne(ask: Ask, env: Env, m: Managed, current: N.TupleLit): Promise<N.TupleLit | null> {
+  const cur = new Map(current.fields);
+  const fields: Array<[string, N.Expr]> = [];
+  for (const [fname, ftype] of m.fields) {
+    const prev = cur.get(fname);
+    const node = prev === undefined
+      ? await readField(ask, env, fname, ftype)
+      : await readFieldEdit(ask, env, fname, ftype, prev);
+    if (node === null) return null; // прервано (EOF)
+    fields.push([fname, node]);
+  }
+  const tup = N.TupleLit(fields);
+  try {
+    env.checkValue(tup, m.elemType); // межполевые ограничения кортежа
+  } catch (e) {
+    console.log(`  ✗ кортеж: ${(e as Error).message}`);
+    return null;
+  }
+  return tup;
+}
+
+function display(node: N.Expr): string {
+  switch (node.kind) {
+    case "Num": return node.text;
+    case "Bool": return node.value ? "да" : "нет";
+    case "Str": return node.value;
+    default: return renderLit(node);
+  }
+}
+
+function renderLit(node: N.Expr): string {
+  switch (node.kind) {
+    case "Num": return node.text;
+    case "Bool": return node.value ? "true" : "false";
+    case "Str": return `"${node.value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    case "Regex": return `r"${node.pattern}"`;
+    case "TupleLit": return `{${node.fields.map(([n, v]) => `${n}: ${renderLit(v)}`).join(", ")}}`;
+    case "RelLit": return `[${node.elems.map(renderLit).join(", ")}]`;
+    default: throw new Error(`нельзя сохранить узел ${node.kind}`);
+  }
+}
+
+function renderRelation(elemName: string, tuples: N.TupleLit[]): string {
+  if (tuples.length === 0) return `${elemName}[]\n`;
+  return `${elemName}[\n  ${tuples.map(renderLit).join(",\n  ")}\n]\n`;
+}
+
+function printTable(m: Managed, tuples: N.TupleLit[]): void {
+  if (tuples.length === 0) {
+    console.log("  (пусто)");
+    return;
+  }
+  const cols = ["№", ...m.fields.map(([n]) => n)];
+  const rows = tuples.map((t, i) => [String(i + 1), ...t.fields.map(([, v]) => display(v))]);
+  const widths = cols.map((c, i) => Math.max(c.length, ...rows.map((r) => r[i].length)));
+  const line = (cells: string[]) => "  " + cells.map((c, i) => c.padEnd(widths[i])).join("  │  ");
+  console.log(line(cols));
+  console.log("  " + widths.map((w) => "─".repeat(w)).join("──┼──"));
+  for (const r of rows) console.log(line(r));
+}
+
+async function main(): Promise<void> {
+  const { schema, data, relation } = parseArgs();
+  const { env, decls } = loadSchema(schema);
+  const m = findRelation(env, decls, relation);
+  let tuples: N.TupleLit[] = data !== undefined ? loadData(env, data) : [];
+
+  const save = (): void => {
+    if (data !== undefined) writeFileSync(data, renderRelation(m.elemName, tuples), "utf8");
+  };
+
+  const rl = readline.createInterface({ input, output });
+  const lines = rl[Symbol.asyncIterator]();
+  const ask: Ask = async (prompt) => {
+    output.write(prompt);
+    const r = await lines.next();
+    return r.done === true ? null : r.value;
+  };
+  console.log(`Essensio · ${m.relName} : ${m.elemName}[]${data !== undefined ? `  (файл: ${data})` : ""}`);
+  console.log(`Уже записано: ${tuples.length}`);
+  try {
+    for (;;) {
+      const choice = await ask("\n[a] добавить  [e] изменить  [l] список  [q] выход > ");
+      if (choice === null) break;
+      const c = choice.trim().toLowerCase();
+      if (c === "a") {
+        const t = await addOne(ask, env, m);
+        if (t !== null) {
+          tuples = [...tuples, t];
+          save();
+          console.log("  ✓ добавлено");
+        }
+      } else if (c === "e") {
+        if (tuples.length === 0) {
+          console.log("  (пусто)");
+        } else {
+          printTable(m, tuples);
+          const raw = await ask("  номер задачи: ");
+          if (raw === null) break;
+          const i = Number(raw.trim());
+          if (!Number.isInteger(i) || i < 1 || i > tuples.length) {
+            console.log("  ✗ нет такого номера");
+          } else {
+            const upd = await editOne(ask, env, m, tuples[i - 1]);
+            if (upd !== null) {
+              tuples = tuples.map((t, k) => (k === i - 1 ? upd : t));
+              save();
+              console.log("  ✓ изменено");
+            }
+          }
+        }
+      } else if (c === "l") {
+        printTable(m, tuples);
+      } else if (c === "q" || c === "") {
+        break;
+      } else {
+        console.log("  ? команды: a, e, l, q");
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+main().catch((e) => {
+  console.error(`Ошибка: ${(e as Error).message}`);
+  exit(1);
+});

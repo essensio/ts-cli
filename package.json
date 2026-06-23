@@ -1,0 +1,20 @@
+{
+  "name": "@essensio/cli",
+  "version": "0.0.1",
+  "description": "CLI к системе типов Essensio: интерактивный ввод кортежей по схеме + интерпретаторы над AST (describe, control-hints). Поверх @essensio/engine.",
+  "type": "module",
+  "scripts": {
+    "cli": "tsx src/cli.ts",
+    "tasks": "tsx src/cli.ts tasks/schema.tt --data tasks/data.tt",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@essensio/engine": "github:essensio/ts-engine"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}
