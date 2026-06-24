@@ -77,6 +77,7 @@ function term(e: N.Expr): string {
     case "Num": return e.text;
     case "Bool": return e.value ? "истина" : "ложь";
     case "Str": return "«" + e.value + "»";
+    case "Null": return "ничто";
     case "Regex": return "«" + e.pattern + "»";
     case "Ref": return e.name;
     case "Member": return term(e.obj) + "." + e.field;

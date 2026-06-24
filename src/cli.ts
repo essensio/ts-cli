@@ -24,7 +24,7 @@ import * as readline from "node:readline/promises";
 import { Env, root, type SemType } from "@essensio/engine";
 import { describe } from "./describe";
 import { nodes as N } from "@essensio/engine";
-import { parseDeclaration, parseLiteral } from "@essensio/engine";
+import { parseDeclaration, parseLiteral, writeLiteral } from "@essensio/engine";
 
 type Managed = { relName: string; elemName: string; elemType: SemType; fields: Array<[string, SemType]> };
 
@@ -210,25 +210,13 @@ function display(node: N.Expr): string {
     case "Num": return node.text;
     case "Bool": return node.value ? "да" : "нет";
     case "Str": return node.value;
-    default: return renderLit(node);
-  }
-}
-
-function renderLit(node: N.Expr): string {
-  switch (node.kind) {
-    case "Num": return node.text;
-    case "Bool": return node.value ? "true" : "false";
-    case "Str": return `"${node.value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    case "Regex": return `r"${node.pattern}"`;
-    case "TupleLit": return `{${node.fields.map(([n, v]) => `${n}: ${renderLit(v)}`).join(", ")}}`;
-    case "RelLit": return `[${node.elems.map(renderLit).join(", ")}]`;
-    default: throw new Error(`нельзя сохранить узел ${node.kind}`);
+    default: return writeLiteral(node); // вложенные кортеж/отношение — текстом нотации
   }
 }
 
 function renderRelation(elemName: string, tuples: N.TupleLit[]): string {
   if (tuples.length === 0) return `${elemName}[]\n`;
-  return `${elemName}[\n  ${tuples.map(renderLit).join(",\n  ")}\n]\n`;
+  return `${elemName}[\n  ${tuples.map(writeLiteral).join(",\n  ")}\n]\n`;
 }
 
 function printTable(m: Managed, tuples: N.TupleLit[]): void {
