@@ -12,7 +12,7 @@
 //   границы уточняются); `_ ~ [строки]` → select+options; `_ ~ r"…"` → pattern.
 //   Нераспознанное (or, межполевое, …) в один контрол не сворачиваем — проверит checker.
 
-import { root, type SemType } from "@essensio/engine";
+import { root, foldSemType, type SemType } from "@essensio/engine";
 import { nodes as N } from "@essensio/engine";
 
 export type Control = "number" | "text" | "checkbox" | "date" | "time" | "select" | "group" | "list";
@@ -35,20 +35,22 @@ export function controlHints(t: SemType): ControlHints {
 }
 
 function controlOf(base: SemType): Control {
-  switch (base.kind) {
-    case "Scalar":
-      switch (base.name) {
+  return foldSemType(base, {
+    Scalar: (s) => {
+      switch (s.name) {
         case "Число": return "number";
         case "Булево": return "checkbox";
         case "Дата": return "date";
         case "Время": return "time";
         default: return "text"; // Строка, UUID
       }
-    case "RefT": return "text";
-    case "Tup": return "group";
-    case "Rel": return "list";
-    case "Sub": return "text"; // недостижимо после root()
-  }
+    },
+    RefT: () => "text",
+    Tup: () => "group",
+    Rel: () => "list",
+    Sub: () => "text", // недостижимо после root()
+    Uni: () => "text", // объединение разнородно — единого контроля нет; проверит checker
+  });
 }
 
 function collect(e: N.Expr, h: ControlHints): void {

@@ -17,35 +17,35 @@ function hints(decls: string[], name: string) {
 suite("controlHints", () => {
   test("длина строки → text + minLength/maxLength", () => {
     assert.deepStrictEqual(
-      hints(["Название = Строка | len(_) >= 1 and len(_) <= 80"], "Название"),
+      hints(["Название = Строка & len(_) >= 1 and len(_) <= 80"], "Название"),
       { control: "text", minLength: 1, maxLength: 80 },
     );
   });
 
   test("строгие границы длины уточняются целочисленно", () => {
     assert.deepStrictEqual(
-      hints(["T = Строка | len(_) > 0 and len(_) < 10"], "T"),
+      hints(["T = Строка & len(_) > 0 and len(_) < 10"], "T"),
       { control: "text", minLength: 1, maxLength: 9 },
     );
   });
 
   test("числовой диапазон → number + min/max", () => {
     assert.deepStrictEqual(
-      hints(["Процент = Число | _ >= 0 and _ <= 100"], "Процент"),
+      hints(["Процент = Число & _ >= 0 and _ <= 100"], "Процент"),
       { control: "number", min: 0, max: 100 },
     );
   });
 
   test("перечисление → select + options", () => {
     assert.deepStrictEqual(
-      hints(['Приоритет = Строка | _ ~ ["низкий", "средний", "высокий"]'], "Приоритет"),
+      hints(['Приоритет = Строка & _ ~ ["низкий", "средний", "высокий"]'], "Приоритет"),
       { control: "select", options: ["низкий", "средний", "высокий"] },
     );
   });
 
   test("регэксп → text + pattern", () => {
     assert.deepStrictEqual(
-      hints(['Почта = Строка | _ ~ r".+@.+"'], "Почта"),
+      hints(['Почта = Строка & _ ~ r".+@.+"'], "Почта"),
       { control: "text", pattern: ".+@.+" },
     );
   });
@@ -53,5 +53,9 @@ suite("controlHints", () => {
   test("базовые контролы без ограничения", () => {
     assert.deepStrictEqual(hints(["Флаг = Булево"], "Флаг"), { control: "checkbox" });
     assert.deepStrictEqual(hints(["Когда = Дата"], "Когда"), { control: "date" });
+  });
+
+  test("объединение → text (единого контроля нет; проверит checker)", () => {
+    assert.deepStrictEqual(hints(["Срок = Дата | Пусто"], "Срок"), { control: "text" });
   });
 });

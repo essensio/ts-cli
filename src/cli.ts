@@ -22,7 +22,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { argv, exit, stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
 
-import { Env, root, type SemType } from "@essensio/engine";
+import { Env, root, foldSemType, type SemType } from "@essensio/engine";
 import { describe } from "./describe";
 import { nodes as N } from "@essensio/engine";
 import { parseDeclaration, parseLiteral, writeLiteral } from "@essensio/engine";
@@ -108,13 +108,14 @@ function loadData(env: Env, path: string): N.TupleLit[] {
 }
 
 function typeLabel(t: SemType): string {
-  switch (t.kind) {
-    case "Scalar": return t.name;
-    case "Sub": return t.name !== "" ? t.name : typeLabel(t.base);
-    case "Rel": return typeLabel(t.elem) + "[]";
-    case "RefT": return "#" + t.target;
-    case "Tup": return "{…}";
-  }
+  return foldSemType(t, {
+    Scalar: (s) => s.name,
+    Sub: (s) => (s.name !== "" ? s.name : typeLabel(s.base)),
+    Rel: (r) => typeLabel(r.elem) + "[]",
+    RefT: (r) => "#" + r.target,
+    Tup: () => "{…}",
+    Uni: (u) => u.members.map(typeLabel).join(" | "),
+  });
 }
 
 function parseBool(raw: string): boolean | null {
