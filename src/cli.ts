@@ -4,16 +4,17 @@
 //
 // ЧТО ДЕЛАЕТ
 //   npm start -- <схема.tt> [--data <файл>] [--relation <имя>]
-//   Читает файл с объявлениями типов, находит управляемое тип-отношение T[]
-//   и даёт интерактивный ввод кортежей. Допустимость значения проверяет ТОЛЬКО
-//   checker (значение годно ⟺ checkValue не бросает TypeErr). Хранилище — файл
-//   --data в нашем же формате литерала-отношения (читается нашим парсером).
+//   Читает файл с объявлениями типов, находит управляемую СУЩНОСТЬ (кортеж-тип
+//   с `#`) и даёт интерактивный ввод кортежей в её таблицу (заводится под `#`).
+//   Допустимость значения проверяет ТОЛЬКО checker (значение годно ⟺ checkValue
+//   не бросает TypeErr). Хранилище — файл --data в нашем же формате литерала-отношения
+//   (читается нашим парсером).
 //
 // ВХОД   аргументы CLI; файл схемы; (опц.) файл данных.
 // ВЫХОД  интерактивная сессия; при --data файл переписывается после каждого добавления.
 //
 // КРАЕВЫЕ
-//   * нет тип-отношения в схеме / безымянный элемент → понятная ошибка;
+//   * нет сущности (кортежа с `#`) в схеме → понятная ошибка;
 //   * битая строка схемы → ошибка с номером строки текста;
 //   * неверный ввод поля → повтор поля; нарушение межполевого ограничения → кортеж не принят.
 
@@ -26,7 +27,7 @@ import { describe } from "./describe";
 import { nodes as N } from "@essensio/engine";
 import { parseDeclaration, parseLiteral, writeLiteral } from "@essensio/engine";
 
-type Managed = { relName: string; elemName: string; elemType: SemType; fields: Array<[string, SemType]> };
+type Managed = { elemName: string; elemType: SemType; fields: Array<[string, SemType]> };
 
 // Запрос строки у пользователя; null — конец ввода (EOF).
 type Ask = (prompt: string) => Promise<string | null>;
@@ -66,23 +67,31 @@ function loadSchema(path: string): { env: Env; decls: N.Decl[] } {
   return { env, decls };
 }
 
-function findRelation(env: Env, decls: N.Decl[], want?: string): Managed {
-  const rels = decls.filter((d) => d.type.kind === "TRel");
-  if (rels.length === 0) throw new Error("в файле нет тип-отношения вида T[]");
-  let decl = rels[rels.length - 1];
+// Управляемое отношение — таблица СУЩНОСТИ: объявленного кортежа-типа с идентичностью
+// (`#`). Таблица заводится под `#`, отдельное `T[]` для этого не нужно.
+// По умолчанию берём последнюю сущность; --relation <имя> выбирает по имени.
+// TODO: поддержать несколько сущностей сразу — сейчас управляем ровно одной таблицей;
+// схема с несколькими сущностями (и ссылками #T между ними) требует переключения
+// активной сущности и отдельной таблицы-хранилища на каждую.
+function findEntity(env: Env, decls: N.Decl[], want?: string): Managed {
+  const entities = decls.filter((d) => {
+    const t = env.types.get(d.name);
+    if (t === undefined) return false;
+    const r = root(t);
+    return r.kind === "Tup" && r.entity;
+  });
+  if (entities.length === 0) throw new Error("в схеме нет сущности (кортеж с #)");
+  let decl = entities[entities.length - 1];
   if (want !== undefined) {
-    const found = rels.find((d) => d.name === want);
-    if (found === undefined) throw new Error(`нет тип-отношения ${want}`);
+    const found = entities.find((d) => d.name === want);
+    if (found === undefined) throw new Error(`нет сущности ${want}`);
     decl = found;
   }
-  const te = decl.type;
-  if (te.kind !== "TRel") throw new Error("ожидалось тип-отношение");
-  if (te.elem.kind !== "TName") throw new Error("элемент отношения должен быть именованным типом");
-  const elemType = env.types.get(te.elem.name);
-  if (elemType === undefined) throw new Error(`неизвестный тип элемента ${te.elem.name}`);
+  const elemType = env.types.get(decl.name);
+  if (elemType === undefined) throw new Error(`неизвестная сущность ${decl.name}`);
   const r = root(elemType);
-  if (r.kind !== "Tup") throw new Error("элемент отношения должен быть кортежем");
-  return { relName: decl.name, elemName: te.elem.name, elemType, fields: r.fields };
+  if (r.kind !== "Tup") throw new Error("сущность должна быть кортежем");
+  return { elemName: decl.name, elemType, fields: r.fields };
 }
 
 function loadData(env: Env, path: string): N.TupleLit[] {
@@ -236,7 +245,7 @@ function printTable(m: Managed, tuples: N.TupleLit[]): void {
 async function main(): Promise<void> {
   const { schema, data, relation } = parseArgs();
   const { env, decls } = loadSchema(schema);
-  const m = findRelation(env, decls, relation);
+  const m = findEntity(env, decls, relation);
   let tuples: N.TupleLit[] = data !== undefined ? loadData(env, data) : [];
 
   const save = (): void => {
@@ -250,7 +259,7 @@ async function main(): Promise<void> {
     const r = await lines.next();
     return r.done === true ? null : r.value;
   };
-  console.log(`Essensio · ${m.relName} : ${m.elemName}[]${data !== undefined ? `  (файл: ${data})` : ""}`);
+  console.log(`Essensio · ${m.elemName}[]${data !== undefined ? `  (файл: ${data})` : ""}`);
   console.log(`Уже записано: ${tuples.length}`);
   try {
     for (;;) {
