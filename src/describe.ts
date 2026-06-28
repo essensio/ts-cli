@@ -70,28 +70,33 @@ function subject(e: N.Expr): string {
   return term(e);
 }
 
-// значение-терм
+// значение-терм. Набор видов узлов держит свёртка foldExpr (плита обхода — в
+// движке); здесь — лишь смысл «как назвать каждый вид». Контекстные виды
+// (BinOp/UnOp, len-Apply) уходят в слой cond/subject поверх — он распознаёт
+// конъюнкции, субъект сравнения и т. п.
+const termAlg: N.ExprCases<string> = {
+  Underscore: () => "значение",
+  Num: (e) => e.text,
+  Bool: (e) => (e.value ? "истина" : "ложь"),
+  Str: (e) => "«" + e.value + "»",
+  Null: () => "ничто",
+  Regex: (e) => "«" + e.pattern + "»",
+  Ref: (e) => e.name,
+  Member: (e) => term(e.obj) + "." + e.field,
+  Apply: (e) =>
+    e.name === "len" && e.args.length === 1
+      ? subject(e)
+      : e.name + "(" + e.args.map(term).join(", ") + ")",
+  BinOp: (e) => cond(e),
+  UnOp: (e) => (e.op === "not" ? cond(e) : "-" + term(e.operand)),
+  TupleLit: (e) => "{" + e.fields.map(([n, v]) => n + ": " + term(v)).join(", ") + "}",
+  RelLit: (e) => "[" + e.elems.map(term).join(", ") + "]",
+  ScalarSel: (e) => e.name + "(" + term(e.arg) + ")",
+  RefSel: (e) => "#" + e.target + "(" + term(e.arg) + ")",
+  TupleSel: (e) => e.name + term(e.value),
+  RelSel: (e) => e.name + term(e.value),
+};
+
 function term(e: N.Expr): string {
-  switch (e.kind) {
-    case "Underscore": return "значение";
-    case "Num": return e.text;
-    case "Bool": return e.value ? "истина" : "ложь";
-    case "Str": return "«" + e.value + "»";
-    case "Null": return "ничто";
-    case "Regex": return "«" + e.pattern + "»";
-    case "Ref": return e.name;
-    case "Member": return term(e.obj) + "." + e.field;
-    case "Apply":
-      return e.name === "len" && e.args.length === 1
-        ? subject(e)
-        : e.name + "(" + e.args.map(term).join(", ") + ")";
-    case "BinOp": return cond(e);
-    case "UnOp": return e.op === "not" ? cond(e) : "-" + term(e.operand);
-    case "TupleLit": return "{" + e.fields.map(([n, v]) => n + ": " + term(v)).join(", ") + "}";
-    case "RelLit": return "[" + e.elems.map(term).join(", ") + "]";
-    case "ScalarSel": return e.name + "(" + term(e.arg) + ")";
-    case "RefSel": return "#" + e.target + "(" + term(e.arg) + ")";
-    case "TupleSel": return e.name + term(e.value);
-    case "RelSel": return e.name + term(e.value);
-  }
+  return N.foldExpr(e, termAlg);
 }
